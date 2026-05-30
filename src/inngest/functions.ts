@@ -8,7 +8,13 @@ import {
 import { z } from "zod";
 
 import { inngest } from "./client";
-import { getSandbox, lastAssistantTextMessageContent } from "./utils";
+import {
+  getSandbox,
+  lastAssistantTextMessageContent,
+  validateSandboxPath,
+  MAX_READ_FILE_SIZE,
+  MAX_READ_RESPONSE_SIZE,
+} from "./utils";
 import { PROMPT } from "@/prompt";
 
 const taskEventSchema = z.object({
@@ -71,7 +77,11 @@ export const processTask = inngest.createFunction(
                 },
               });
 
-              return processCommand.stdout;
+              return {
+                stdout: buffers.stdout,
+                stderr: buffers.stderr,
+                exitCode: (processCommand as { exitCode?: number }).exitCode ?? 0,
+              };
             });
           },
         }),
@@ -97,6 +107,12 @@ export const processTask = inngest.createFunction(
 
                 const updatedFiles = network.state.data.files || {};
                 for (const file of files) {
+                  const validationError = validateSandboxPath(file.path);
+                  if (validationError) {
+                    throw new Error(
+                      `Invalid path "${file.path}": ${validationError}`,
+                    );
+                  }
                   await sandbox.files.write(file.path, file.content);
                   updatedFiles[file.path] = file.content;
                 }
@@ -127,13 +143,49 @@ export const processTask = inngest.createFunction(
                 throw new Error(`Sandbox with ID ${sandboxId} not found`);
               }
 
-              const contents: Record<string, unknown>[] = [];
+              const contents: Array<
+                | { path: string; content: unknown }
+                | { path: string; error: string }
+              > = [];
               for (const path of paths) {
-                const content = await sandbox.files.read(path);
-                contents.push({ path, content });
+                const validationError = validateSandboxPath(path);
+                if (validationError) {
+                  contents.push({ path, error: validationError });
+                  continue;
+                }
+
+                try {
+                  const content = await sandbox.files.read(path);
+                  const contentStr =
+                    typeof content === "string"
+                      ? content
+                      : JSON.stringify(content);
+                  if (contentStr.length > MAX_READ_FILE_SIZE) {
+                    contents.push({
+                      path,
+                      error: `File exceeds maximum size of ${MAX_READ_FILE_SIZE} bytes`,
+                    });
+                  } else {
+                    contents.push({ path, content });
+                  }
+                } catch (err) {
+                  contents.push({
+                    path,
+                    error:
+                      err instanceof Error
+                        ? err.message
+                        : "Failed to read file",
+                  });
+                }
               }
 
-              return JSON.stringify(contents);
+              const response = JSON.stringify(contents);
+              if (response.length > MAX_READ_RESPONSE_SIZE) {
+                throw new Error(
+                  `Total response size exceeds maximum of ${MAX_READ_RESPONSE_SIZE} bytes`,
+                );
+              }
+              return response;
             });
           },
         }),
