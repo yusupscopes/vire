@@ -1,9 +1,5 @@
 import { Sandbox } from "@e2b/code-interpreter";
-import {
-  openai,
-  createAgent,
-  createNetwork,
-} from "@inngest/agent-kit";
+import { openai, createAgent, createNetwork } from "@inngest/agent-kit";
 import { z } from "zod";
 
 import { inngest } from "./client";
@@ -36,7 +32,7 @@ export const processTask = inngest.createFunction(
       description: "An expert coding agent.",
       system: PROMPT,
       model: openai({
-        model: "gpt-4.1",
+        model: "gpt-5",
         defaultParameters: {
           temperature: 0.1,
         },
@@ -64,7 +60,7 @@ export const processTask = inngest.createFunction(
     const network = createNetwork({
       name: "code-agent-network",
       agents: [codeAgent],
-      maxIter: 15,
+      maxIter: 10,
       router: async ({ network }) => {
         const summary = network.state.data.summary;
         if (summary) return;
