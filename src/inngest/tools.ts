@@ -1,4 +1,4 @@
-import { createTool } from "@inngest/agent-kit";
+import { createTool, Tool } from "@inngest/agent-kit";
 import { z } from "zod";
 
 import {
@@ -7,6 +7,7 @@ import {
   MAX_READ_FILE_SIZE,
   MAX_READ_RESPONSE_SIZE,
 } from "./utils";
+import { AgentState } from "./types";
 
 export function createSandboxTools(sandboxId: string) {
   return [
@@ -53,30 +54,30 @@ export function createSandboxTools(sandboxId: string) {
           }),
         ),
       }),
-      handler: async ({ files }, { step, network }) => {
-        const newFiles = await step?.run(
-          "createOrUpdateFiles",
-          async () => {
-            const sandbox = await getSandbox(sandboxId);
-            if (!sandbox) {
-              throw new Error(`Sandbox with ID ${sandboxId} not found`);
-            }
+      handler: async (
+        { files },
+        { step, network }: Tool.Options<AgentState>,
+      ) => {
+        const newFiles = await step?.run("createOrUpdateFiles", async () => {
+          const sandbox = await getSandbox(sandboxId);
+          if (!sandbox) {
+            throw new Error(`Sandbox with ID ${sandboxId} not found`);
+          }
 
-            const updatedFiles = network.state.data.files || {};
-            for (const file of files) {
-              const validationError = validateSandboxPath(file.path);
-              if (validationError) {
-                throw new Error(
-                  `Invalid path "${file.path}": ${validationError}`,
-                );
-              }
-              await sandbox.files.write(file.path, file.content);
-              updatedFiles[file.path] = file.content;
+          const updatedFiles = network.state.data.files || {};
+          for (const file of files) {
+            const validationError = validateSandboxPath(file.path);
+            if (validationError) {
+              throw new Error(
+                `Invalid path "${file.path}": ${validationError}`,
+              );
             }
+            await sandbox.files.write(file.path, file.content);
+            updatedFiles[file.path] = file.content;
+          }
 
-            return updatedFiles;
-          },
-        );
+          return updatedFiles;
+        });
 
         // network.state.data is managed by agent-kit for cross-iteration
         // state within a single network.run(). It is ephemeral to this
@@ -101,8 +102,7 @@ export function createSandboxTools(sandboxId: string) {
           }
 
           const contents: Array<
-            | { path: string; content: unknown }
-            | { path: string; error: string }
+            { path: string; content: unknown } | { path: string; error: string }
           > = [];
           for (const path of paths) {
             const validationError = validateSandboxPath(path);
@@ -114,9 +114,7 @@ export function createSandboxTools(sandboxId: string) {
             try {
               const content = await sandbox.files.read(path);
               const contentStr =
-                typeof content === "string"
-                  ? content
-                  : JSON.stringify(content);
+                typeof content === "string" ? content : JSON.stringify(content);
               if (contentStr.length > MAX_READ_FILE_SIZE) {
                 contents.push({
                   path,

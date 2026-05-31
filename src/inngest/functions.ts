@@ -6,20 +6,22 @@ import { inngest } from "./client";
 import { getSandbox, lastAssistantTextMessageContent } from "./utils";
 import { PROMPT } from "./prompt";
 import { createSandboxTools } from "./tools";
+import { prisma } from "@/lib/database";
+import { AgentState } from "./types";
 
-const taskEventSchema = z.object({
-  value: z.string().min(1, "Task value must not be empty").max(4000),
+const messageEventSchema = z.object({
+  value: z.string().min(1, "Message value must not be empty").max(4000),
 });
 
-export const processTask = inngest.createFunction(
-  { id: "process-task", triggers: { event: "app/task.created" } },
+export const processMessage = inngest.createFunction(
+  { id: "process-message", triggers: { event: "app/message.created" } },
   async ({ event, step }) => {
-    const parsed = taskEventSchema.safeParse(event.data);
+    const parsed = messageEventSchema.safeParse(event.data);
     if (!parsed.success) {
-      throw new Error(`Invalid task event: ${parsed.error.message}`);
+      throw new Error(`Invalid message event: ${parsed.error.message}`);
     }
 
-    const { value: taskValue } = parsed.data;
+    const { value: messageValue } = parsed.data;
 
     const sandboxId = await step.run("create-sandbox", async () => {
       const template = process.env.E2B_TEMPLATE_NAME ?? "vire-nextjs-example";
@@ -27,7 +29,7 @@ export const processTask = inngest.createFunction(
       return sandbox.sandboxId;
     });
 
-    const codeAgent = createAgent({
+    const codeAgent = createAgent<AgentState>({
       name: "code-agent",
       description: "An expert coding agent.",
       system: PROMPT,
@@ -57,7 +59,7 @@ export const processTask = inngest.createFunction(
       },
     });
 
-    const network = createNetwork({
+    const network = createNetwork<AgentState>({
       name: "code-agent-network",
       agents: [codeAgent],
       maxIter: 10,
@@ -68,7 +70,11 @@ export const processTask = inngest.createFunction(
       },
     });
 
-    const result = await network.run(taskValue);
+    const result = await network.run(messageValue);
+
+    const isError =
+      !result.state.data.summary ||
+      Object.keys(result.state.data.files || {}).length === 0;
 
     const sandboxUrl = await step.run("get-sandbox-url", async () => {
       const sandbox = await getSandbox(sandboxId);
@@ -78,6 +84,33 @@ export const processTask = inngest.createFunction(
 
       const host = sandbox.getHost(3000);
       return `https://${host}`;
+    });
+
+    await step.run("save-result", async () => {
+      if (isError) {
+        return await prisma.message.create({
+          data: {
+            content: "Something went wrong. Please try again later.",
+            role: "ASSISTANT",
+            type: "ERROR",
+          },
+        });
+      }
+
+      return await prisma.message.create({
+        data: {
+          content: result.state.data.summary,
+          role: "ASSISTANT",
+          type: "RESULT",
+          fragment: {
+            create: {
+              sandboxUrl: sandboxUrl,
+              title: "Fragment",
+              files: result.state.data.files,
+            },
+          },
+        },
+      });
     });
 
     await step.run("cleanup-sandbox", async () => {
